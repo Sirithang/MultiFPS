@@ -41,6 +41,12 @@ public class FixedRingBuffer<T>
         _end = (_end + 1) % _data.Length;
     }
 
+    public void AddArray(T[] array, int count)
+    {
+        for (int i = 0; i < count; ++i)
+            AddValue(array[i]);
+    }
+
     // Put in result the content of the buffer from, start (included) to end (excluded) (in ring buffer space, so end can be smaller than start, it will wrap)
     // Return the count of data copied. If -1 is return, the result was too small to contain all.
     public int GetSubArray(ref T[] result, int start, int end)
