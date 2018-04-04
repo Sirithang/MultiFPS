@@ -20,6 +20,7 @@ MonoBehaviour:
   m_Float_keys:
   - pbEditorScroll.x
   - pbEditorScroll.y
+  - pbWeldDistance
   m_String_keys: []
   m_Color_keys: []
   m_Material_keys: []
@@ -28,6 +29,7 @@ MonoBehaviour:
   m_Float_values:
   - 0
   - 0
+  - 1.27
   m_String_values: []
   m_Color_values: []
   m_Material_values: []

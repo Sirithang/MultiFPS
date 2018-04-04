@@ -4,7 +4,7 @@ using UnityEngine;
 using UnityEngine.Networking;
 
 [NetworkSettings(channel = Channels.DefaultUnreliable)]
-public class PlayerObject : NetworkBehaviour
+public class PlayerObject : NetworkBehaviour, IServerUpdate
 {
     public struct PlayerState
     {
@@ -13,7 +13,7 @@ public class PlayerObject : NetworkBehaviour
         public Quaternion bodyRotation;
         public Quaternion lookRotation;
 
-        public double networkTime;
+        public uint serverFrame;
         public uint lastInputProcessed;
     }
 
@@ -27,7 +27,7 @@ public class PlayerObject : NetworkBehaviour
         public float lookVerticalValue;
         public float lookHorizontalValue;
 
-        public double networkTime;
+        public uint serverFrame;
         public uint inputID;
     }
 
@@ -44,7 +44,6 @@ public class PlayerObject : NetworkBehaviour
 
     [SyncVar(hook = "OnSyncPlayerState")]
     protected PlayerState serverState;
-
     protected PlayerState _currentState;
 
     protected CharacterController _controller;
@@ -88,31 +87,33 @@ public class PlayerObject : NetworkBehaviour
         }
     }
 
-    private void Update()
+    public void Tick()
     {
+        if (isLocalPlayer)
+        {
+            _currentState.lastInputProcessed = _localInput.inputID;
+            SendUpdatedState();
+            return;
+        }
 
-        if (!isLocalPlayer)
-        {//non local player will just lerp toward server state from local state
-            if (isServer)
-            { //the server on physic update will just process the unprocessed input.
+        if (_unsentInput.Count > 0 && _lastInputProcessed < _unsentInput.Peek().inputID)
+        {
+            while (_unsentInput.Count > 0 && _lastInputProcessed < _unsentInput.Peek().inputID)
+            {
+                var state = _unsentInput.Dequeue();
 
-                if (_unsentInput.Count > 0 && _lastInputProcessed < _unsentInput.Peek().inputID)
-                {
-                    while (_unsentInput.Count > 0 && _lastInputProcessed < _unsentInput.Peek().inputID)
-                    {
-                        var state = _unsentInput.Dequeue();
+                ApplyInput(state);
 
-                        ApplyInput(state);
-
-                        _currentState.lastInputProcessed = state.inputID;
-                        _lastInputProcessed = _currentState.lastInputProcessed;             
-                    }
-
-                    SendUpdatedState();
-                }
+                _currentState.lastInputProcessed = state.inputID;
+                _lastInputProcessed = _currentState.lastInputProcessed;
             }
         }
 
+        SendUpdatedState();
+    }
+
+    private void Update()
+    {
         if (!isLocalPlayer && _positionLerpDuration > 0)
         {
             _positionLerpTime = Mathf.Clamp(_positionLerpTime + Time.deltaTime, 0, _positionLerpDuration);
@@ -142,6 +143,11 @@ public class PlayerObject : NetworkBehaviour
                 else
                     Cursor.lockState = CursorLockMode.Locked;
             }
+
+            if (Input.GetButtonDown("Fire1"))
+            {
+                Shoot(cameraPosition.position, cameraPosition.forward);
+            }
         }
     }
 
@@ -163,12 +169,6 @@ public class PlayerObject : NetworkBehaviour
             _positions.AddValue(transform.position);
 
             CmdReceiveInput(_unsentInput.ToArray(), _unsentInput.Count);
-
-            if(isServer)
-            {//this is a selfhosting server, we need to send the synchronized value to other
-                _currentState.lastInputProcessed = _localInput.inputID;
-                SendUpdatedState();
-            }
         }
     }
 
@@ -179,7 +179,7 @@ public class PlayerObject : NetworkBehaviour
         _currentState.lookRotation = cameraPosition.localRotation;
         _currentState.velocity = _currentVelocity;
 
-        _currentState.networkTime = Network.time;
+        _currentState.serverFrame = ServerSimulation.frameNumber;
 
         serverState = _currentState;
     }
@@ -187,7 +187,16 @@ public class PlayerObject : NetworkBehaviour
     void CreateInputState(ref PlayerInputState state)
     {
         state.inputID = _inputIdMax++;
-        state.networkTime = Network.time;
+        state.serverFrame = ServerSimulation.frameNumber;
+    }
+
+    void Shoot(Vector3 origin, Vector3 direction)
+    {
+        RaycastHit hit;
+        if(Physics.Raycast(origin, direction, out hit, 1000))
+        {
+            Debug.Log($"Hit {hit.collider.gameObject.name}");
+        }
     }
 
     void OnSyncPlayerState(PlayerState val)
@@ -230,10 +239,10 @@ public class PlayerObject : NetworkBehaviour
         _currentState = serverState;
         serverState = val;
 
-        if (!isLocalPlayer && _currentState.networkTime > 0.1f)
+        if (!isLocalPlayer && _currentState.serverFrame > 0)
         { 
             //this ensure it's at least the 2nd we received, as the 1st sync, _currentState.networkTime == 0
-            _positionLerpDuration = (float)(serverState.networkTime - _currentState.networkTime);
+            _positionLerpDuration = Mathf.Max(1, (serverState.serverFrame - _currentState.serverFrame)) * ServerSimulation.serverTimestep;
             _positionLerpTime = 0;
         }
     }
@@ -297,6 +306,11 @@ public class PlayerObject : NetworkBehaviour
     public override void OnStartLocalPlayer()
     {
         Cursor.lockState = CursorLockMode.Locked;
+    }
+
+    public override void OnStartServer()
+    {
+        ServerSimulation.RegisterObject(this);
     }
 
     void OnGUI()
