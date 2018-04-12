@@ -123,6 +123,7 @@ MonoBehaviour:
     type: 2}
   thirdPersonPrefab: {fileID: 1327608166682156, guid: 33108bf1a10278749ab2ecba75605a8a,
     type: 2}
+  hitPrefab: {fileID: 1000010844420130, guid: 4edabb1c0dde62743b137378c7d22980, type: 2}
 --- !u!143 &143678670870573804
 CharacterController:
   m_ObjectHideFlags: 1

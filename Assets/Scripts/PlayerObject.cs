@@ -23,6 +23,7 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
         public float verticalValue;
 
         public bool jumpPressed;
+        public bool shootingPressed;
 
         public float lookVerticalValue;
         public float lookHorizontalValue;
@@ -41,6 +42,9 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
 
     public GameObject firstpersonPrefab;
     public GameObject thirdPersonPrefab;
+
+    [Header("TEMP REF")]
+    public GameObject hitPrefab;
 
     [SyncVar(hook = "OnSyncPlayerState")]
     protected PlayerState serverState;
@@ -144,10 +148,7 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
                     Cursor.lockState = CursorLockMode.Locked;
             }
 
-            if (Input.GetButtonDown("Fire1"))
-            {
-                Shoot(cameraPosition.position, cameraPosition.forward);
-            }
+            _localInput.shootingPressed = Input.GetButtonDown("Fire1");
         }
     }
 
@@ -190,13 +191,21 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
         state.serverFrame = ServerSimulation.frameNumber;
     }
 
-    void Shoot(Vector3 origin, Vector3 direction)
+    void Shoot(Vector3 origin, Vector3 direction, uint frame)
     {
+        if (isServer && frame != ServerSimulation.frameNumber)
+            ServerSimulation.Rewind(frame);
+
         RaycastHit hit;
         if(Physics.Raycast(origin, direction, out hit, 1000))
         {
-            Debug.Log($"Hit {hit.collider.gameObject.name}");
+            var instance = Instantiate(hitPrefab, hit.collider.transform, false);
+            instance.transform.position = hit.point;
+            instance.transform.forward = hit.normal;
         }
+
+        Debug.DrawRay(origin, direction * 1000);
+        Debug.Break();
     }
 
     void OnSyncPlayerState(PlayerState val)
@@ -287,6 +296,10 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
             if (_currentVelocity.y < 0)
                 _currentVelocity.y = 0.0f;
         }
+
+        //-- shooting
+        if(input.shootingPressed)
+            Shoot(cameraPosition.position, cameraPosition.forward, input.serverFrame);
     }
 
     //Call by the owning player to send their cached input to the server
@@ -301,6 +314,12 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
 
             _unsentInput.Enqueue(input[i]);
         }
+    }
+
+    [Command(channel = Channels.DefaultReliable)]
+    void CmdFire(PlayerInputState[] input, int count)
+    {
+
     }
 
     public override void OnStartLocalPlayer()

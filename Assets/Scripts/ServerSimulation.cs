@@ -7,7 +7,7 @@ public class ServerSimulation : NetworkBehaviour
 {
     public struct RecordedData
     {
-        public Collider body;
+        public Collider collider;
 
         public Vector3 position;
         public Quaternion rotation;
@@ -20,8 +20,16 @@ public class ServerSimulation : NetworkBehaviour
         public RecordedData[] data;
     }
 
+    [System.Serializable]
+    public struct ServerState
+    {
+        public float sinceLastTick;
+        public uint frameNumber;
+        public double networkTime;
+    }
+
     public static float serverTimestep = 0.3f;
-    public static uint frameNumber {  get { return _instance._frameNumber; } }
+    public static uint frameNumber {  get { return _instance._serverState.frameNumber; } }
 
     protected static ServerSimulation _instance;
 
@@ -30,11 +38,8 @@ public class ServerSimulation : NetworkBehaviour
 
     protected FixedRingBuffer<FrameData> _framesData = new FixedRingBuffer<FrameData>(60);
 
-    protected float _sinceLastUpdate;
-
-    //synced data
-    [SyncVar]
-    uint _frameNumber;
+    [SyncVar(hook = "SyncServerState")]
+    ServerState _serverState;
 
 
     private void Awake()
@@ -45,8 +50,15 @@ public class ServerSimulation : NetworkBehaviour
 
     private void Start()
     {
-        _sinceLastUpdate = 0.0f;
-        _frameNumber = 0;
+        if (isServer)
+        {
+            _serverState = new ServerState
+            {
+                frameNumber = 0,
+                networkTime = Network.time,
+                sinceLastTick = 0
+            };
+        }
     }
 
     public static void RegisterObject(IServerUpdate obj)
@@ -71,21 +83,67 @@ public class ServerSimulation : NetworkBehaviour
 
     private void Update()
     {
-        _sinceLastUpdate += Time.deltaTime;
+        UpdateServerState();
+    }
 
-        while(_sinceLastUpdate > serverTimestep)
+    void UpdateServerState()
+    {
+        _serverState.sinceLastTick += Time.deltaTime;
+        if (isServer)
+            _serverState.networkTime = Network.time;
+
+        while (_serverState.sinceLastTick > serverTimestep)
         {
-            if(isServer)
+            if (isServer)
                 Tick();
 
-            _frameNumber += 1;
-            _sinceLastUpdate -= serverTimestep;
+            _serverState.frameNumber += 1;
+            _serverState.sinceLastTick -= serverTimestep;
         }
+    }
+
+    void SyncServerState(ServerState newState)
+    {
+        _serverState = newState;
+
+        //we add the time it took the message to reach the client so it catch up ant missing frame
+        _serverState.sinceLastTick += (float)(Network.time - newState.networkTime);
+
+        UpdateServerState();
+    }
+
+    public static void Rewind(uint frame)
+    {
+        _instance.RewindTo(frame);
     }
 
     void RewindTo(uint serverFrame)
     {
-        //nt offset = 
+        uint lastDataFrame = _framesData.data[_framesData.GetIndex(-1)].serverFrame;
+        int difference = (int)(lastDataFrame - serverFrame);
+
+        FrameData data = _framesData.data[_framesData.GetIndex(-difference-1)];
+
+        for(int i = 0; i < data.data.Length; ++i)
+        {
+            if(data.data[i].collider != null)
+            {
+                if(data.data[i].collider.attachedRigidbody != null)
+                {
+                    data.data[i].collider.attachedRigidbody.position = data.data[i].position;
+                    data.data[i].collider.attachedRigidbody.rotation = data.data[i].rotation;
+                }
+                else
+                {
+                    data.data[i].collider.transform.position = data.data[i].position;
+                    data.data[i].collider.transform.rotation = data.data[i].rotation;
+                }
+            }
+        }
+
+        Physics.autoSimulation = false;
+        Physics.Simulate(0);
+        Physics.autoSimulation = true;
     }
 
     void Tick()
@@ -94,6 +152,19 @@ public class ServerSimulation : NetworkBehaviour
         {
             serverTicked[i].Tick();
         }
+
+        FrameData data = new FrameData();
+        data.serverFrame = frameNumber;
+        data.data = new RecordedData[trackedColliders.Count];
+        for (int i = 0; i < trackedColliders.Count; ++i)
+        {
+            data.data[i].collider = trackedColliders[i];
+            data.data[i].position = trackedColliders[i].transform.position;
+            data.data[i].rotation = trackedColliders[i].transform.rotation;
+
+        }
+
+        _framesData.AddValue(data);
     }
 }
 
