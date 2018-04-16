@@ -5,7 +5,7 @@ using UnityEngine.Networking;
 using UnityEngine.AI;
 
 //Very basic movable used to test lag compensation
-[NetworkSettings(channel = Channels.DefaultUnreliable)]
+[NetworkSettings(channel = Channels.DefaultUnreliable, sendInterval = 0.03f)]
 public class TestMovable : NetworkBehaviour, IServerUpdate
 {
     public struct MovableState
@@ -22,6 +22,8 @@ public class TestMovable : NetworkBehaviour, IServerUpdate
     protected NavMeshAgent _navmeshAgent;
     protected float _sinceLastPick = 0.0f;
 
+    protected Collider _collider;
+
     protected float _interpolationTime = 0.0f;
     protected float _interpolationDuration = 0.0f;
 
@@ -29,13 +31,17 @@ public class TestMovable : NetworkBehaviour, IServerUpdate
     private void OnEnable()
     {
         _navmeshAgent = GetComponent<NavMeshAgent>();
+        _collider = GetComponent<Collider>();
+
         ServerSimulation.RegisterObject(this);
+        ServerSimulation.StartTrackingCollider(_collider);
     }
 
     [ServerCallback]
     private void OnDisable()
     {
         ServerSimulation.UnregisterObject(this);
+        ServerSimulation.StopTrackingCollider(_collider);
     }
 
     [ServerCallback]
@@ -76,9 +82,9 @@ public class TestMovable : NetworkBehaviour, IServerUpdate
     {
         _sinceLastPick += ServerSimulation.serverTimestep;
 
-        if(_sinceLastPick > 4.0f || _navmeshAgent.remainingDistance < 0.01f)
+        if(_sinceLastPick > 6.0f || _navmeshAgent.remainingDistance < 0.01f)
         {
-            Vector2 direction = Random.insideUnitCircle * 5.0f;
+            Vector2 direction = Random.insideUnitCircle * 10.0f;
             _navmeshAgent.SetDestination(transform.position + new Vector3(direction.x, 0, direction.y));
             _sinceLastPick = 0.0f;
         }

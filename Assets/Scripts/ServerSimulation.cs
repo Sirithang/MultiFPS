@@ -17,6 +17,7 @@ public class ServerSimulation : NetworkBehaviour
     public struct FrameData
     {
         public uint serverFrame;
+        public double networkTime;
         public RecordedData[] data;
     }
 
@@ -36,6 +37,7 @@ public class ServerSimulation : NetworkBehaviour
     public List<IServerUpdate> serverTicked = new List<IServerUpdate>();
     public List<Collider> trackedColliders = new List<Collider>();
 
+    protected Queue<int> _freeIdx = new Queue<int>();
     protected FixedRingBuffer<FrameData> _framesData = new FixedRingBuffer<FrameData>(60);
 
     [SyncVar(hook = "SyncServerState")]
@@ -73,12 +75,23 @@ public class ServerSimulation : NetworkBehaviour
 
     public static void StartTrackingCollider(Collider c)
     {
-        _instance.trackedColliders.Add(c);
+        if(_instance._freeIdx.Count > 0)
+        {
+            int index = _instance._freeIdx.Dequeue();
+            _instance.trackedColliders[index] = c;
+        }
+        else
+            _instance.trackedColliders.Add(c);
     }
 
     public static void StopTrackingCollider(Collider c)
     {
-        _instance.trackedColliders.Remove(c);
+        //we never remove from the list, we reuse slot that were freed, allow to keep a match between frame data (same collider always at the same index)
+
+        //TODO : change that to store in the colliders their index, will avoid a costy search
+        int idx = _instance.trackedColliders.FindIndex(coll => { return coll == c; });
+
+        _instance._freeIdx.Enqueue(idx);
     }
 
     private void Update()
@@ -112,37 +125,60 @@ public class ServerSimulation : NetworkBehaviour
         UpdateServerState();
     }
 
-    public static void Rewind(uint frame)
+    public static void Rewind(double networkTime)
     {
-        _instance.RewindTo(frame);
+        _instance.RewindTo(networkTime);
     }
 
-    void RewindTo(uint serverFrame)
+    void RewindTo(double networkTime)
     {
-        uint lastDataFrame = _framesData.data[_framesData.GetIndex(-1)].serverFrame;
-        int difference = (int)(lastDataFrame - serverFrame);
+        int frameDiff = Mathf.FloorToInt((float)(Network.time - networkTime) / serverTimestep) + 1;
 
-        FrameData data = _framesData.data[_framesData.GetIndex(-difference-1)];
+        if (frameDiff == 1)
+            return; //we can't really interpolate between the previous frame and the frame currently being ticked, so just exit (TODO : use last frame data instead of current frame data)
 
-        for(int i = 0; i < data.data.Length; ++i)
-        {
-            if(data.data[i].collider != null)
+        var data = _framesData.data[_framesData.GetIndex(-frameDiff)];
+        var next = _framesData.data[_framesData.GetIndex(-frameDiff + 1)];
+
+        float ratio = (float)((networkTime - data.networkTime) / (next.networkTime - data.networkTime));
+
+        Debug.Log($"Interpolting between frame {data.serverFrame}:{data.networkTime} and frame {next.serverFrame}:{next.networkTime} for asked time {networkTime} and an interp ratio of {ratio}");
+
+
+        for (int i = 0; i < data.data.Length; ++i)
+         {
+            if (data.data[i].collider != null)
             {
-                if(data.data[i].collider.attachedRigidbody != null)
+                Vector3 originPosition = data.data[i].position;
+                Quaternion originRotation = data.data[i].rotation;
+
+                if(next.data.Length > i && next.data[i].collider == data.data[i].collider)
                 {
-                    data.data[i].collider.attachedRigidbody.position = data.data[i].position;
-                    data.data[i].collider.attachedRigidbody.rotation = data.data[i].rotation;
+                    originPosition = Vector3.Lerp(originPosition, next.data[i].position, ratio);
+                    originRotation = Quaternion.Lerp(originRotation, next.data[i].rotation, ratio);
+                }
+
+                if (data.data[i].collider.attachedRigidbody != null)
+                {
+                    Debug.DrawLine(data.data[i].collider.attachedRigidbody.position + Vector3.up * 0.5f, data.data[i].collider.attachedRigidbody.position - Vector3.up * 0.5f, Color.blue);
+                    Debug.DrawLine(data.data[i].collider.attachedRigidbody.position + Vector3.forward * 0.5f, data.data[i].collider.attachedRigidbody.position - Vector3.forward * 0.5f, Color.blue);
+
+                    data.data[i].collider.attachedRigidbody.position = originPosition;
+                    data.data[i].collider.attachedRigidbody.rotation = originRotation;
                 }
                 else
                 {
-                    data.data[i].collider.transform.position = data.data[i].position;
-                    data.data[i].collider.transform.rotation = data.data[i].rotation;
+                    Debug.DrawLine(data.data[i].collider.transform.position + Vector3.up * 0.5f, data.data[i].collider.transform.position - Vector3.up * 0.5f, Color.red);
+                    Debug.DrawLine(data.data[i].collider.transform.position + Vector3.forward * 0.5f, data.data[i].collider.transform.position - Vector3.forward * 0.5f, Color.red);
+
+                    data.data[i].collider.transform.position = originPosition;
+                    data.data[i].collider.transform.rotation = originRotation;
                 }
             }
         }
 
         Physics.autoSimulation = false;
-        Physics.Simulate(0);
+        Physics.Simulate(0.00001f);
         Physics.autoSimulation = true;
     }
 
@@ -155,6 +191,7 @@ public class ServerSimulation : NetworkBehaviour
 
         FrameData data = new FrameData();
         data.serverFrame = frameNumber;
+        data.networkTime = Network.time;
         data.data = new RecordedData[trackedColliders.Count];
         for (int i = 0; i < trackedColliders.Count; ++i)
         {

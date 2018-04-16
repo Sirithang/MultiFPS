@@ -13,6 +13,7 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
         public Quaternion bodyRotation;
         public Quaternion lookRotation;
 
+        public double networkTime;
         public uint serverFrame;
         public uint lastInputProcessed;
     }
@@ -28,6 +29,7 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
         public float lookVerticalValue;
         public float lookHorizontalValue;
 
+        public double networkTime;
         public uint serverFrame;
         public uint inputID;
     }
@@ -67,11 +69,23 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
     protected float _positionLerpTime = -1;
     protected float _positionLerpDuration = -1;
 
+    protected double _currentLatency = 0.0f;
+
+    protected Collider _collider;
+
     protected ThirdPersonPlayer _thirdPersonPlayerController;
 
     private void OnEnable()
     {
         _controller = GetComponent<CharacterController>();
+        _collider = GetComponent<Collider>();
+
+        ServerSimulation.StartTrackingCollider(_collider);
+    }
+
+    private void OnDisable()
+    {
+        ServerSimulation.StopTrackingCollider(_collider);
     }
 
     private void Start()
@@ -169,7 +183,7 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
 
             _positions.AddValue(transform.position);
 
-            CmdReceiveInput(_unsentInput.ToArray(), _unsentInput.Count);
+            CmdReceiveInput(_unsentInput.ToArray(), _unsentInput.Count, Network.time);
         }
     }
 
@@ -180,6 +194,7 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
         _currentState.lookRotation = cameraPosition.localRotation;
         _currentState.velocity = _currentVelocity;
 
+        _currentState.networkTime = Network.time;
         _currentState.serverFrame = ServerSimulation.frameNumber;
 
         serverState = _currentState;
@@ -188,13 +203,17 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
     void CreateInputState(ref PlayerInputState state)
     {
         state.inputID = _inputIdMax++;
+        state.networkTime = Network.time;
         state.serverFrame = ServerSimulation.frameNumber;
     }
 
-    void Shoot(Vector3 origin, Vector3 direction, uint frame)
+    void Shoot(PlayerInputState input)
     {
-        if (isServer && frame != ServerSimulation.frameNumber)
-            ServerSimulation.Rewind(frame);
+        Vector3 origin = cameraPosition.position;
+        Vector3 direction = cameraPosition.forward;
+
+        if (isServer && input.serverFrame != ServerSimulation.frameNumber)
+            ServerSimulation.Rewind(input.networkTime - _currentLatency);
 
         RaycastHit hit;
         if(Physics.Raycast(origin, direction, out hit, 1000))
@@ -249,9 +268,10 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
         serverState = val;
 
         if (!isLocalPlayer && _currentState.serverFrame > 0)
-        { 
+        {
             //this ensure it's at least the 2nd we received, as the 1st sync, _currentState.networkTime == 0
-            _positionLerpDuration = Mathf.Max(1, (serverState.serverFrame - _currentState.serverFrame)) * ServerSimulation.serverTimestep;
+            //_positionLerpDuration = Mathf.Max(1, (serverState.serverFrame - _currentState.serverFrame)) * ServerSimulation.serverTimestep;
+            _positionLerpDuration = (float)(serverState.networkTime - _currentState.networkTime);
             _positionLerpTime = 0;
         }
     }
@@ -299,13 +319,15 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
 
         //-- shooting
         if(input.shootingPressed)
-            Shoot(cameraPosition.position, cameraPosition.forward, input.serverFrame);
+            Shoot(input);
     }
 
     //Call by the owning player to send their cached input to the server
     [Command(channel = Channels.DefaultUnreliable)]
-    void CmdReceiveInput(PlayerInputState[] input, int count)
+    void CmdReceiveInput(PlayerInputState[] input, int count, double networkTime)
     {
+        _currentLatency = (Network.time - networkTime);
+
         _unsentInput.Clear();
         for (int i = 0; i < count; ++i)
         {
@@ -330,6 +352,11 @@ public class PlayerObject : NetworkBehaviour, IServerUpdate
     public override void OnStartServer()
     {
         ServerSimulation.RegisterObject(this);
+    }
+
+    private void OnDestroy()
+    {
+        ServerSimulation.UnregisterObject(this);
     }
 
     void OnGUI()
